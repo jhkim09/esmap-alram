@@ -194,3 +194,104 @@ function test17th() {
 function test1st() {
   return testWithSpecificDay(1);
 }
+
+
+// ============================================================
+// Make.com 웹훅 연동 (시트 수정 시 자동 알림)
+// ============================================================
+
+/**
+ * Make.com 웹훅 URL
+ */
+const WEBHOOK_URL = 'https://hook.eu2.make.com/g3b1k1rrmeur0f05lkz7yc9cn62lj1ea';
+
+/**
+ * 시트 편집 시 자동 실행
+ *
+ * 트리거 설정 방법:
+ * 1. Apps Script 좌측 메뉴에서 시계 아이콘 (트리거) 클릭
+ * 2. "+ 트리거 추가" 클릭
+ * 3. 실행할 함수: onSheetEdit
+ * 4. 이벤트 소스: 스프레드시트에서
+ * 5. 이벤트 유형: 수정 시
+ * 6. 저장
+ */
+function onSheetEdit(e) {
+  try {
+    const sheet = e.source.getActiveSheet();
+    const range = e.range;
+
+    // 설정된 시트가 아니면 무시
+    if (sheet.getName() !== CONFIG.SHEET_NAME) {
+      return;
+    }
+
+    // 데이터 영역인지 확인 (3행 이상, H열(8) 이상)
+    if (range.getRow() < CONFIG.ROW_DATA_START || range.getColumn() < CONFIG.COL_DAY_START) {
+      return; // 데이터 영역 외 편집은 무시
+    }
+
+    // 편집된 일자 계산
+    const editedDay = range.getColumn() - CONFIG.COL_DAY_START + 1;
+
+    // 유효한 일자인지 확인 (1-31)
+    if (editedDay < 1 || editedDay > 31) {
+      return;
+    }
+
+    // 해당 일자의 0인 인원 조회
+    const result = findZeroForDay(editedDay);
+
+    // 편집 정보 추가
+    result.editInfo = {
+      editedRow: range.getRow(),
+      editedColumn: range.getColumn(),
+      editedDay: editedDay,
+      newValue: range.getValue(),
+      timestamp: new Date().toISOString()
+    };
+
+    // Make.com 웹훅으로 전송
+    sendToWebhook(result);
+
+  } catch (error) {
+    Logger.log('Error in onSheetEdit: ' + error.message);
+  }
+}
+
+/**
+ * Make.com 웹훅으로 데이터 전송
+ * @param {Object} data - 전송할 데이터
+ */
+function sendToWebhook(data) {
+  const options = {
+    method: 'POST',
+    contentType: 'application/json',
+    payload: JSON.stringify(data),
+    muteHttpExceptions: true
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(WEBHOOK_URL, options);
+    Logger.log('Webhook response: ' + response.getContentText());
+  } catch (error) {
+    Logger.log('Webhook error: ' + error.message);
+  }
+}
+
+/**
+ * 웹훅 테스트 함수 - 수동으로 실행하여 Make.com 연결 확인
+ */
+function testWebhook() {
+  const result = findZeroForDay(9); // 9일 기준 테스트
+  result.editInfo = {
+    editedRow: 3,
+    editedColumn: 16,
+    editedDay: 9,
+    newValue: 0,
+    timestamp: new Date().toISOString(),
+    isTest: true
+  };
+  sendToWebhook(result);
+  Logger.log('웹훅 테스트 전송 완료');
+}
