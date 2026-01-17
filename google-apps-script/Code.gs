@@ -7,28 +7,47 @@
  * 3. 웹 앱으로 배포 (배포 > 새 배포 > 웹 앱)
  * 4. Make.com에서 HTTP 모듈로 이 URL 호출
  *
- * 시트 구조 예시:
- * | 이름   | 2025-01-17 | 2025-01-18 | 2025-01-19 |
- * |--------|------------|------------|------------|
- * | 홍길동 |     1      |     0      |     1      |
- * | 김철수 |     0      |     1      |     1      |
+ * 시트 구조:
+ * | 순번 | 본부 | 지점 | AM | FM | FSR | 사번 | 1 | 2 | 3 | ... | 31 | 계 |
+ * |------|------|------|----|----|-----|------|---|---|---|-----|----|----|
+ * |      |      |      |    |    |     |      | 목| 금| 토|     |    |    |
+ * | 1    | 강남1| 알파 | 김 | 윤 | 강  | 32614| 0 | 4 | 0 |     |    | 23 |
  */
 
-// 설정
+// 설정 - 시트 구조에 맞게 수정됨
 const CONFIG = {
-  SHEET_NAME: 'Sheet1',  // 시트 이름 (필요시 변경)
-  NAME_COLUMN: 1,        // 이름이 있는 열 (A=1)
-  DATA_START_ROW: 2,     // 데이터 시작 행 (헤더 제외)
-  DATE_START_COLUMN: 2   // 날짜 데이터 시작 열 (B=2)
+  SHEET_NAME: 'Sheet1',      // 시트 이름 (필요시 변경)
+
+  // 열 위치 (A=1, B=2, ...)
+  COL_SEQUENCE: 1,           // 순번
+  COL_BONBU: 2,              // 본부
+  COL_JIJEM: 3,              // 지점
+  COL_AM: 4,                 // AM
+  COL_FM: 5,                 // FM
+  COL_FSR: 6,                // FSR (이름)
+  COL_SABUN: 7,              // 사번
+  COL_DAY_START: 8,          // 일별 데이터 시작 (1일 = H열 = 8)
+
+  // 행 위치
+  ROW_HEADER: 1,             // 헤더 행 (순번, 본부, 지점, ...)
+  ROW_DAYOFWEEK: 2,          // 요일 행 (목, 금, 토, ...)
+  ROW_DATA_START: 3          // 데이터 시작 행
 };
 
 /**
  * 웹 앱 엔드포인트 (GET 요청)
  * Make.com에서 이 URL을 호출하면 JSON 응답 반환
+ *
+ * 옵션 파라미터:
+ * - day: 특정 일자 조회 (예: ?day=17)
  */
 function doGet(e) {
   try {
-    const result = findZeroForToday();
+    // URL 파라미터에서 day 값 가져오기 (없으면 오늘 날짜)
+    const dayParam = e && e.parameter && e.parameter.day;
+    const day = dayParam ? parseInt(dayParam, 10) : new Date().getDate();
+
+    const result = findZeroForDay(day);
     return ContentService
       .createTextOutput(JSON.stringify(result))
       .setMimeType(ContentService.MimeType.JSON);
@@ -51,144 +70,89 @@ function doPost(e) {
 }
 
 /**
- * 오늘 날짜에 0인 인원 찾기
- * @returns {Object} { success: boolean, date: string, count: number, members: Array }
+ * 특정 일자에 0인 인원 찾기
+ * @param {number} day - 일자 (1-31)
+ * @returns {Object} - 결과 객체
  */
-function findZeroForToday() {
+function findZeroForDay(day) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
   if (!sheet) {
     throw new Error(`시트 '${CONFIG.SHEET_NAME}'을 찾을 수 없습니다.`);
   }
 
-  const today = getTodayString();
-  const todayColumn = findDateColumn(sheet, today);
-
-  if (!todayColumn) {
-    return {
-      success: true,
-      date: today,
-      count: 0,
-      members: [],
-      message: `오늘(${today}) 날짜 열을 찾을 수 없습니다.`
-    };
+  // 유효한 일자 확인
+  if (day < 1 || day > 31) {
+    throw new Error(`유효하지 않은 일자입니다: ${day}`);
   }
 
-  const members = findMembersWithZero(sheet, todayColumn);
+  // 해당 일자의 열 계산 (1일 = 8열, 2일 = 9열, ...)
+  const dayColumn = CONFIG.COL_DAY_START + (day - 1);
+
+  // 요일 가져오기 (2행에서)
+  const dayOfWeek = sheet.getRange(CONFIG.ROW_DAYOFWEEK, dayColumn).getValue();
+
+  const members = findMembersWithZero(sheet, dayColumn);
+
+  const today = new Date();
+  const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
   return {
     success: true,
-    date: today,
+    date: dateStr,
+    day: day,
+    dayOfWeek: dayOfWeek || '',
     count: members.length,
     members: members,
     message: members.length > 0
-      ? `${members.length}명이 오늘 0으로 표시되어 있습니다.`
-      : '오늘 0으로 표시된 인원이 없습니다.'
+      ? `${day}일(${dayOfWeek}) 기준 ${members.length}명이 0으로 표시되어 있습니다.`
+      : `${day}일(${dayOfWeek}) 기준 0으로 표시된 인원이 없습니다.`
   };
 }
 
 /**
- * 오늘 날짜를 YYYY-MM-DD 형식으로 반환
+ * 오늘 날짜에 0인 인원 찾기 (편의 함수)
+ * @returns {Object} - 결과 객체
  */
-function getTodayString() {
+function findZeroForToday() {
   const today = new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, '0');
-  const day = String(today.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-/**
- * 헤더에서 오늘 날짜에 해당하는 열 찾기
- * @param {Sheet} sheet - 시트 객체
- * @param {string} todayStr - 오늘 날짜 문자열
- * @returns {number|null} - 열 번호 또는 null
- */
-function findDateColumn(sheet, todayStr) {
-  const lastColumn = sheet.getLastColumn();
-  const headers = sheet.getRange(1, CONFIG.DATE_START_COLUMN, 1, lastColumn - CONFIG.DATE_START_COLUMN + 1).getValues()[0];
-
-  for (let i = 0; i < headers.length; i++) {
-    const headerValue = headers[i];
-
-    // 날짜 객체인 경우
-    if (headerValue instanceof Date) {
-      const headerDate = formatDate(headerValue);
-      if (headerDate === todayStr) {
-        return CONFIG.DATE_START_COLUMN + i;
-      }
-    }
-    // 문자열인 경우
-    else if (typeof headerValue === 'string') {
-      // 다양한 날짜 형식 처리
-      const normalized = normalizeDate(headerValue);
-      if (normalized === todayStr) {
-        return CONFIG.DATE_START_COLUMN + i;
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Date 객체를 YYYY-MM-DD 형식으로 변환
- */
-function formatDate(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-/**
- * 다양한 날짜 형식을 YYYY-MM-DD로 정규화
- */
-function normalizeDate(dateStr) {
-  // 이미 YYYY-MM-DD 형식인 경우
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    return dateStr;
-  }
-
-  // MM/DD/YYYY 형식
-  const match1 = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (match1) {
-    return `${match1[3]}-${match1[1].padStart(2, '0')}-${match1[2].padStart(2, '0')}`;
-  }
-
-  // YYYY/MM/DD 형식
-  const match2 = dateStr.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
-  if (match2) {
-    return `${match2[1]}-${match2[2].padStart(2, '0')}-${match2[3].padStart(2, '0')}`;
-  }
-
-  return dateStr;
+  return findZeroForDay(today.getDate());
 }
 
 /**
  * 특정 열에서 값이 0인 인원 목록 반환
  * @param {Sheet} sheet - 시트 객체
- * @param {number} column - 확인할 열 번호
+ * @param {number} dayColumn - 확인할 열 번호
  * @returns {Array} - 0인 인원 목록
  */
-function findMembersWithZero(sheet, column) {
+function findMembersWithZero(sheet, dayColumn) {
   const lastRow = sheet.getLastRow();
-  if (lastRow < CONFIG.DATA_START_ROW) {
+  if (lastRow < CONFIG.ROW_DATA_START) {
     return [];
   }
 
-  const numRows = lastRow - CONFIG.DATA_START_ROW + 1;
-  const names = sheet.getRange(CONFIG.DATA_START_ROW, CONFIG.NAME_COLUMN, numRows, 1).getValues();
-  const values = sheet.getRange(CONFIG.DATA_START_ROW, column, numRows, 1).getValues();
+  const numRows = lastRow - CONFIG.ROW_DATA_START + 1;
+
+  // 필요한 데이터 범위 한번에 가져오기 (성능 최적화)
+  const dataRange = sheet.getRange(CONFIG.ROW_DATA_START, 1, numRows, dayColumn);
+  const data = dataRange.getValues();
 
   const members = [];
   for (let i = 0; i < numRows; i++) {
-    const value = values[i][0];
-    // 0 또는 "0" 또는 빈값을 0으로 처리할지 선택
+    const row = data[i];
+    const value = row[dayColumn - 1]; // 해당 일자의 값
+
+    // 0인 경우만 추가 (숫자 0 또는 문자열 "0")
     if (value === 0 || value === '0') {
       members.push({
-        name: names[i][0],
-        row: CONFIG.DATA_START_ROW + i,
-        value: value
+        순번: row[CONFIG.COL_SEQUENCE - 1],
+        본부: row[CONFIG.COL_BONBU - 1],
+        지점: row[CONFIG.COL_JIJEM - 1],
+        AM: row[CONFIG.COL_AM - 1],
+        FM: row[CONFIG.COL_FM - 1],
+        FSR: row[CONFIG.COL_FSR - 1],
+        사번: row[CONFIG.COL_SABUN - 1],
+        값: value,
+        행번호: CONFIG.ROW_DATA_START + i
       });
     }
   }
@@ -206,28 +170,27 @@ function testFindZeroForToday() {
 }
 
 /**
- * 특정 날짜로 테스트 (오늘이 아닌 날짜 테스트용)
- * @param {string} dateStr - 테스트할 날짜 (YYYY-MM-DD)
+ * 특정 일자로 테스트
+ * @param {number} day - 테스트할 일자 (1-31)
  */
-function testWithSpecificDate(dateStr) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET_NAME);
-  const column = findDateColumn(sheet, dateStr);
-
-  if (!column) {
-    Logger.log(`날짜 ${dateStr}에 해당하는 열을 찾을 수 없습니다.`);
-    return;
-  }
-
-  const members = findMembersWithZero(sheet, column);
-  Logger.log(`날짜: ${dateStr}`);
-  Logger.log(`0인 인원: ${JSON.stringify(members, null, 2)}`);
+function testWithSpecificDay(day) {
+  const result = findZeroForDay(day || 17); // 기본값 17일
+  Logger.log(JSON.stringify(result, null, 2));
+  return result;
 }
 
 /**
- * 시트 변경 시 자동 트리거 (선택사항)
- * 트리거 설정: 편집 > 현재 프로젝트의 트리거 > 트리거 추가
+ * 17일 테스트 (예시 데이터 기준)
+ * 모든 인원이 17일에 0을 가지고 있으므로 전체 명단이 반환됨
  */
-function onEdit(e) {
-  // 필요시 여기에 자동 알림 로직 추가
-  // 예: 특정 셀이 0으로 변경되면 이메일 발송 등
+function test17th() {
+  return testWithSpecificDay(17);
+}
+
+/**
+ * 1일 테스트
+ * 1일에 0인 인원만 반환 (강지호, 두영민, 문희광 등)
+ */
+function test1st() {
+  return testWithSpecificDay(1);
 }
